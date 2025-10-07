@@ -5,7 +5,9 @@ import pandas as pd
 import logging
 from decimal import Decimal, ROUND_DOWN
 import time
-from .position_calculator import PositionCalculator
+from position_calculator import PositionCalculator
+import os
+from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
@@ -387,3 +389,18 @@ class PositionManager:
             logger.error(f"Failed to get portfolio summary: {e}")
             return {'error': str(e), 'strategy_id': strategy_id}
 
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    # Example usage
+    # Load environment variables
+    load_dotenv()
+    
+    hyperliquid = PositionManager(
+        exchange_id='hyperliquid',
+        api_key=os.getenv('HYPERLIQUID_USER_ID'),
+        secret=os.getenv('HYPERLIQUID_KEY'),
+        sandbox=False
+    )
+
+    positions = hyperliquid.get_current_positions()
+    print(positions)
