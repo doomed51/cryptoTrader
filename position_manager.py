@@ -47,7 +47,9 @@ class PositionManager:
         self._position_calculator = None
     
     def _load_markets(self):
-        """Load market data from exchange"""
+        """Load market data from exchange
+            https://github.com/ccxt/ccxt/wiki/Manual#markets
+        """
         try:
             self.markets = self.exchange.load_markets()
             logger.info(f"Loaded {len(self.markets)} markets from {self.exchange_id}")
@@ -153,7 +155,7 @@ class PositionManager:
             logger.error(f"Failed to fetch prices: {e}")
             return {symbol: 0.0 for symbol in symbols}
     
-    def get_position_calculator(self) -> PositionCalculator:
+    def _get_position_calculator(self) -> PositionCalculator:
         """Get or create position calculator with current positions"""
         current_positions = self.get_current_positions()
         
@@ -167,8 +169,9 @@ class PositionManager:
 
     def calculate_rebalancing_trades(self, 
                                    strategy_id: str,
-                                   target_weights: Optional[pd.DataFrame] = None, 
-                                   cash_allocation: Optional[float] = None) -> pl.DataFrame:
+                                #    target_weights: Optional[pd.DataFrame] = None, 
+                                #    cash_allocation: Optional[float] = None
+                                   ) -> pl.DataFrame:
         """
         Calculate required trades to achieve target portfolio weights
         
@@ -182,29 +185,29 @@ class PositionManager:
         """
         try:
             # Get current prices
-            calculator = self.get_position_calculator()
+            calculator = self._get_position_calculator()
             
             # Get all symbols that might be needed
-            if target_weights is not None:
-                symbols = target_weights['symbol'].tolist()
-            else:
-                config = calculator.get_strategy_config(strategy_id)
-                symbols = list(config.get('target_weights', {}).keys())
+            # if target_weights is not None:
+            #     symbols = target_weights['symbol'].tolist()
+            # else:
+            #     config = calculator.get_strategy_config(strategy_id)
+            #     symbols = list(config.get('target_weights', {}).keys())
             
             # Add any current position symbols
-            current_positions = self.get_current_positions(strategy_id)
-            if len(current_positions) > 0:
-                symbols.extend(current_positions['symbol'].to_list())
+            # current_positions = self.get_current_positions(strategy_id)
+            # if len(current_positions) > 0:
+            #     symbols.extend(current_positions['symbol'].to_list())
             
-            symbols = list(set(symbols))  # Remove duplicates
-            prices = self._get_current_prices(symbols)
+            # symbols = list(set(symbols))  # Remove duplicates
+            # prices = self._get_current_prices(symbols)
             
             # Use calculator to compute trades
             return calculator.calculate_rebalancing_trades(
                 strategy_id=strategy_id,
-                cash_allocation=cash_allocation,
-                target_weights=target_weights,
-                prices=prices
+                # cash_allocation=cash_allocation,
+                # target_weights=target_weights,
+                # prices=prices
             )
             
         except Exception as e:
@@ -333,16 +336,13 @@ class PositionManager:
     
     def analyze_portfolio_drift(self, strategy_id: str) -> Dict[str, Any]:
         """Analyze portfolio drift using position calculator"""
-        calculator = self.get_position_calculator()
+        calculator = self._get_position_calculator()
         return calculator.analyze_portfolio_drift(strategy_id)
 
     def get_portfolio_summary(self, strategy_id: str = 'default') -> Dict[str, Any]:
         """Get comprehensive portfolio summary"""
-        calculator = self.get_position_calculator()
+        calculator = self._get_position_calculator()
         return calculator.get_portfolio_summary(strategy_id)
-                'error': str(e),
-                'status': 'failed'
-            }
     
     def _filter_by_strategy(self, df: pl.DataFrame, strategy_id: Optional[str]) -> pl.DataFrame:
         """Filter DataFrame by strategy ID if provided"""

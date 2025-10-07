@@ -10,17 +10,20 @@ from decimal import Decimal, ROUND_DOWN
 logger = logging.getLogger(__name__)
 
 class PositionCalculator:
-    def __init__(self, current_positions: pl.DataFrame, config_path: Optional[str] = None):
+    def __init__(self, current_positions: pl.DataFrame, exchange, markets, config_path: Optional[str] = None):
         """
         Initialize position calculator with current positions
         
         Args:
             current_positions: DataFrame with current portfolio positions
             config_path: Optional path to strategy config directory
+            exchange: CCXT exchange instance for fetching prices
         """
         self.current_positions = current_positions
         self.config_path = Path(config_path) if config_path else None
         self.strategy_configs = {}
+        self.exchange = exchange
+        self.markets = markets  # List of market symbols available on the exchange
         
         if self.config_path and self.config_path.exists():
             self._load_strategy_configs()
@@ -48,6 +51,30 @@ class PositionCalculator:
         except Exception as e:
             logger.error(f"Failed to load strategy configs: {e}")
     
+    def _get_current_prices(self, symbols: List[str]) -> Dict[str, float]:
+        """Fetch current prices for given symbols
+            Symbols should be in exchange expected format 
+        """
+        prices = {}
+        try:
+            # Create trading pairs (assume quote currency is USDT)
+            tickers = {}
+            for symbol in symbols:
+                # if symbol == 'USDT' or symbol == 'USD':
+                #     prices[symbol] = 1.0
+                #     continue
+                    
+                # pair = f"{symbol}/USDT"
+                if symbol in self.markets:
+                    ticker = self.exchange.fetch_ticker(symbol)
+                    prices[symbol] = ticker['last']
+                    
+            return prices
+        except Exception as e:
+            logger.error(f"Failed to fetch prices: {e}")
+            return {symbol: 0.0 for symbol in symbols}
+        
+
     def get_strategy_config(self, strategy_id: str) -> Dict[str, Any]:
         """
         Get configuration for a specific strategy
@@ -78,13 +105,13 @@ class PositionCalculator:
         # Merge with loaded config
         return {**default_config, **config}
     
-
     ################ how to load weights since some are in api, some are in local 
-    def calculate_target_weights(self, 
+    def get_target_weights(self, 
                                strategy_id: str, 
-                               custom_weights: Optional[pd.DataFrame] = None) -> pl.DataFrame:
+                            #    custom_weights: Optional[pd.DataFrame] = None
+                               ) -> pl.DataFrame:
         """
-        Calculate target weights for a strategy
+        Retrieve target weights for a strategy
         
         Args:
             strategy_id: Strategy identifier
@@ -133,9 +160,10 @@ class PositionCalculator:
     
     def calculate_rebalancing_trades(self, 
                                    strategy_id: str,
-                                   cash_allocation: Optional[float] = None,
-                                   target_weights: Optional[pd.DataFrame] = None,
-                                   prices: Optional[Dict[str, float]] = None) -> pl.DataFrame:
+                                #    cash_allocation: Optional[float] = None,
+                                #    target_weights: Optional[pd.DataFrame] = None,
+                                #    prices: Optional[Dict[str, float]] = None
+                                   ) -> pl.DataFrame:
         """
         Calculate required trades to achieve target portfolio weights
         
@@ -155,12 +183,14 @@ class PositionCalculator:
             # Use provided cash allocation or config default
             if cash_allocation is None:
                 cash_allocation = config.get('cash_allocation', 0)
-            
+                target_leverage = config.get('target_leverage', 1)
+                cash_allocation = cash_allocation * target_leverage
+
             if cash_allocation <= 0:
                 raise ValueError(f"Invalid cash allocation: {cash_allocation}")
             
             # Calculate target weights
-            target_df = self.calculate_target_weights(strategy_id, target_weights)
+            target_df = self.get_target_weights(strategy_id)
             
             # Filter current positions for this strategy
             current_positions = self._filter_positions_by_strategy(strategy_id)
@@ -170,14 +200,14 @@ class PositionCalculator:
             if len(current_positions) > 0:
                 all_symbols.update(current_positions['symbol'].to_list())
             
-            if prices is None:
-                raise ValueError("Prices must be provided for rebalancing calculations")
+            # Fetch current prices ---------------- SHOULD THIS INSTEAD BE THE ARRIVAL PRICES IN THE STARTEGY WEIGHTS ? 
+            prices = self._get_current_prices(list(all_symbols))
             
             # Calculate target quantities
             target_quantities = []
             for row in target_df.iter_rows(named=True):
                 symbol = row['symbol']
-                weight = row['weight']
+                weight = row['target_weight']
                 price = prices.get(symbol, 0)
                 
                 if price <= 0:
@@ -186,6 +216,12 @@ class PositionCalculator:
                 
                 target_value = cash_allocation * weight
                 target_qty = target_value / price
+                # ensure target_qty is rounded to the precision amount of the market 
+                # https://github.com/ccxt/ccxt/wiki/Manual#precision-and-limits
+                if symbol in self.markets:
+                    precision = self.markets[symbol]['precision']['amount']
+                    target_qty = float(Decimal(target_qty).quantize(Decimal(str(precision)), rounding=ROUND_DOWN))
+                    target_value = target_qty * price
                 
                 target_quantities.append({
                     'symbol': symbol,
@@ -235,15 +271,15 @@ class PositionCalculator:
                 )
             
             # Add trade direction and metadata
-            if len(trades_df) > 0:
-                trades_df = trades_df.with_columns([
-                    pl.when(pl.col('trade_quantity') > 0)
-                    .then(pl.lit('buy'))
-                    .otherwise(pl.lit('sell'))
-                    .alias('side'),
-                    pl.col('trade_quantity').abs().alias('abs_quantity'),
-                    (pl.col('target_value') / cash_allocation).alias('target_weight_pct')
-                ])
+            # if len(trades_df) > 0:
+            #     trades_df = trades_df.with_columns([
+            #         pl.when(pl.col('trade_quantity') > 0) # trade quantity should imply direction, don't need a side column 
+            #         .then(pl.lit('buy'))
+            #         .otherwise(pl.lit('sell'))
+            #         .alias('side'),
+            #         pl.col('trade_quantity').abs().alias('abs_quantity'),
+            #         (pl.col('target_value') / cash_allocation).alias('target_weight_pct')
+            #     ])
             
             return trades_df
             
@@ -266,7 +302,7 @@ class PositionCalculator:
         """
         try:
             # Get target weights
-            target_df = self.calculate_target_weights(strategy_id, target_weights)
+            target_df = self.get_target_weights(strategy_id, target_weights)
             
             # Get current positions for strategy
             current_positions = self._filter_positions_by_strategy(strategy_id)
